@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>免费内网穿透</title>
+<style>
+  * { box-sizing: border-box; }
+  body { background:#0B0818; color:#fff; font-family: system-ui, sans-serif; max-width:640px; margin:0 auto; padding:24px 20px 80px; }
+  h1 { color:#7C4DFF; font-size:26px; margin:16px 0 6px; }
+  .sub { color:#9E96B8; font-size:13px; margin-bottom:24px; }
+  .label { color:#9E96B8; font-size:12px; margin-top:16px; margin-bottom:6px; }
+  input, select { width:100%; padding:12px 14px; background:#1A1430; border:1px solid #333; color:#fff; border-radius:10px; font-size:15px; outline:none; }
+  input:focus, select:focus { border-color:#7C4DFF; }
+  button { width:100%; padding:14px; background:#7C4DFF; border:none; color:#fff; border-radius:10px; font-size:16px; cursor:pointer; margin-top:20px; font-weight:600; }
+  button:disabled { background:#555; cursor:not-allowed; }
+  button.ghost { background:#1A1430; border:1px solid #444; font-size:14px; padding:10px; margin-top:10px; }
+  .result { margin-top:20px; padding:16px; background:#1A1430; border-radius:10px; white-space:pre-wrap; word-break:break-all; font-family:monospace; font-size:12px; display:none; line-height:1.7; }
+  .token-box { background:#0F0B1E; padding:12px; border-radius:8px; margin-top:10px; border:1px solid #444; user-select:all; }
+  .ok { color:#00E676; }
+  .err { color:#FF5252; }
+  .hint { color:#9E96B8; font-size:11px; margin-top:8px; }
+  .tabs { display:flex; gap:8px; margin-top:20px; }
+  .tab { flex:1; padding:10px; text-align:center; background:#1A1430; border-radius:10px; cursor:pointer; font-size:14px; color:#9E96B8; }
+  .tab.active { background:#7C4DFF; color:#fff; }
+  .panel { display:none; }
+  .panel.active { display:block; }
+  .tunnel-item { background:#1A1430; padding:14px; border-radius:10px; margin-top:10px; font-size:13px; }
+  .tunnel-url { color:#00E5FF; word-break:break-all; }
+  .tunnel-meta { color:#9E96B8; font-size:11px; margin-top:6px; }
+  .del-btn { background:#FF2B4D; color:#fff; border:none; padding:6px 12px; border-radius:8px; font-size:12px; cursor:pointer; margin-top:8px; }
+  .topbar { display:flex; justify-content:space-between; align-items:center; margin-top:16px; padding:12px 14px; background:#1A1430; border-radius:10px; font-size:13px; }
+</style>
+</head>
+<body>
+<h1>免费内网穿透</h1>
+<div class="sub">Cloudflare Tunnel · 无需公网 IP · 自动 HTTPS</div>
+
+<div id="topbar" class="topbar" style="display:none;">
+  <span>👤 <b id="whoami">-</b></span>
+  <button class="ghost" style="width:auto;margin:0;padding:6px 12px;" onclick="logout()">退出</button>
+</div>
+
+<div id="auth-panel">
+  <div class="tabs">
+    <div class="tab active" onclick="switchTab('login')">登录</div>
+    <div class="tab" onclick="switchTab('register')">注册</div>
+  </div>
+
+  <div class="panel active" id="panel-login">
+    <div class="label">用户名</div>
+    <input id="login-user" placeholder="字母数字下划线">
+    <div class="label">密码</div>
+    <input id="login-pass" type="password" placeholder="至少 6 位">
+    <button onclick="doLogin()">登录</button>
+  </div>
+
+  <div class="panel" id="panel-register">
+    <div class="label">用户名</div>
+    <input id="reg-user" placeholder="3~20 字符">
+    <div class="label">密码</div>
+    <input id="reg-pass" type="password" placeholder="至少 6 位">
+    <button onclick="doRegister()">注册</button>
+  </div>
+
+  <div class="result" id="auth-out"></div>
+</div>
+
+<div id="main-panel" style="display:none;">
+  <div class="label">选择域名</div>
+  <select id="domain"></select>
+
+  <div class="label">子域名</div>
+  <input id="sub" placeholder="例如 myapp">
+
+  <div class="label">本地内网 IP</div>
+  <input id="ip" value="127.0.0.1">
+
+  <div class="label">本地端口</div>
+  <input id="port" placeholder="例如 8080" type="number">
+
+  <div class="label">协议</div>
+  <select id="proto">
+    <option value="http">HTTP</option>
+    <option value="https">HTTPS</option>
+    <option value="tcp">TCP</option>
+    <option value="ssh">SSH</option>
+    <option value="rdp">RDP</option>
+  </select>
+
+  <button id="btn-create" onclick="doCreate()">创建隧道</button>
+  <div class="result" id="out"></div>
+
+  <div class="label" style="margin-top:30px;">我的隧道</div>
+  <button class="ghost" onclick="loadMyTunnels()">刷新列表</button>
+  <div id="my-tunnels"></div>
+</div>
+
+<script>
+const API = "https://tunnel.bcsimp.dpdns.org";
+let TOKEN = localStorage.getItem("token") || "";
+
+function switchTab(t) {
+  document.querySelectorAll(".tab").forEach((e,i) => {
+    e.classList.toggle("active", (i === 0 && t === "login") || (i === 1 && t === "register"));
+  });
+  document.getElementById("panel-login").classList.toggle("active", t === "login");
+  document.getElementById("panel-register").classList.toggle("active", t === "register");
+}
+
+function showAuth(msg, isErr) {
+  const o = document.getElementById("auth-out");
+  o.style.display = "block";
+  o.innerHTML = (isErr ? '<span class="err">' : '<span class="ok">') + msg + '</span>';
+}
+
+async function doRegister() {
+  const u = document.getElementById("reg-user").value.trim();
+  const p = document.getElementById("reg-pass").value;
+  if (!u || !p) return showAuth("请填完整", true);
+  const r = await fetch(API + "/api/register", {
+    method: "POST", headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({username: u, password: p})
+  });
+  const d = await r.json();
+  if (!d.ok) return showAuth(d.error, true);
+  showAuth("注册成功，请切换到登录", false);
+  switchTab("login");
+  document.getElementById("login-user").value = u;
+}
+
+async function doLogin() {
+  const u = document.getElementById("login-user").value.trim();
+  const p = document.getElementById("login-pass").value;
+  if (!u || !p) return showAuth("请填完整", true);
+  const r = await fetch(API + "/api/login", {
+    method: "POST", headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({username: u, password: p})
+  });
+  const d = await r.json();
+  if (!d.ok) return showAuth(d.error, true);
+  TOKEN = d.token;
+  localStorage.setItem("token", TOKEN);
+  localStorage.setItem("username", d.username);
+  enterMain();
+}
+
+function logout() {
+  if (TOKEN) fetch(API + "/api/logout", {method:"POST", headers:{"Authorization":"Bearer "+TOKEN}});
+  TOKEN = "";
+  localStorage.clear();
+  location.reload();
+}
+
+async function enterMain() {
+  document.getElementById("auth-panel").style.display = "none";
+  document.getElementById("main-panel").style.display = "block";
+  document.getElementById("topbar").style.display = "flex";
+  document.getElementById("whoami").textContent = localStorage.getItem("username") || "?";
+  await loadDomains();
+  loadMyTunnels();
+}
+
+async function loadDomains() {
+  try {
+    const r = await fetch(API + "/api/domains");
+    const d = await r.json();
+    const sel = document.getElementById("domain");
+    sel.innerHTML = "";
+    for (const name of d.domains) {
+      const o = document.createElement("option");
+      o.value = name; o.textContent = name;
+      sel.appendChild(o);
+    }
+  } catch (e) {
+    document.getElementById("domain").innerHTML = "<option>加载失败</option>";
+  }
+}
+
+async function doCreate() {
+  const domain = document.getElementById("domain").value;
+  const sub = document.getElementById("sub").value.trim();
+  const ip = document.getElementById("ip").value.trim();
+  const port = document.getElementById("port").value.trim();
+  const proto = document.getElementById("proto").value;
+  const out = document.getElementById("out");
+  const btn = document.getElementById("btn-create");
+
+  if (!sub || !ip || !port) { alert("请填完整"); return; }
+
+  btn.disabled = true; btn.textContent = "创建中...";
+  out.style.display = "block"; out.textContent = "正在创建...";
+
+  try {
+    const r = await fetch(API + "/api/create", {
+      method: "POST",
+      headers: {"Content-Type":"application/json","Authorization":"Bearer "+TOKEN},
+      body: JSON.stringify({domain, sub, localIp: ip, localPort: port, proto})
+    });
+    const d = await r.json();
+    if (!d.ok) { out.innerHTML = '<span class="err">❌ '+d.error+'</span>'; return; }
+    out.innerHTML =
+      '<span class="ok">✅ 创建成功</span>\n\n' +
+      '外网访问：' + d.url + '\n' +
+      '本地服务：' + d.service + '\n\n' +
+      '<b>【token】</b>' +
+      '<div class="token-box">' + d.token + '</div>' +
+      '<div class="hint">点一下可全选复制</div>\n' +
+      '<b>【下一步】</b>\n' +
+      '1. 下载 cloudflared: https://github.com/cloudflare/cloudflared/releases\n' +
+      '2. 运行：\n' +
+      'cloudflared tunnel run --token <上面那串>';
+    loadMyTunnels();
+  } catch (e) {
+    out.innerHTML = '<span class="err">❌ '+e.message+'</span>';
+  } finally {
+    btn.disabled = false; btn.textContent = "创建隧道";
+  }
+}
+
+async function loadMyTunnels() {
+  const box = document.getElementById("my-tunnels");
+  box.innerHTML = "<div class='tunnel-meta'>加载中...</div>";
+  try {
+    const r = await fetch(API + "/api/my-tunnels", {headers:{"Authorization":"Bearer "+TOKEN}});
+    const d = await r.json();
+    if (!d.ok) { box.innerHTML = "<div class='tunnel-meta'>" + d.error + "</div>"; return; }
+    if (d.tunnels.length === 0) { box.innerHTML = "<div class='tunnel-meta'>还没有隧道</div>"; return; }
+    box.innerHTML = "";
+    for (const t of d.tunnels) {
+      const div = document.createElement("div");
+      div.className = "tunnel-item";
+      div.innerHTML =
+        '<div class="tunnel-url">' + t.url + '</div>' +
+        '<div class="tunnel-meta">本地：' + t.local_ip + ':' + t.local_port + ' (' + t.proto + ')</div>' +
+        '<button class="del-btn" onclick="delTunnel(\'' + t.tunnel_id + '\')">删除</button>';
+      box.appendChild(div);
+    }
+  } catch (e) {
+    box.innerHTML = "<div class='tunnel-meta'>加载失败：" + e.message + "</div>";
+  }
+}
+
+async function delTunnel(id) {
+  if (!confirm("确定删除这个隧道？")) return;
+  const r = await fetch(API + "/api/delete", {
+    method: "POST",
+    headers: {"Content-Type":"application/json","Authorization":"Bearer "+TOKEN},
+    body: JSON.stringify({tunnelId: id})
+  });
+  const d = await r.json();
+  if (!d.ok) { alert("删除失败: " + d.error); return; }
+  loadMyTunnels();
+}
+
+// 启动
+if (TOKEN) {
+  enterMain();
+} else {
+  document.getElementById("auth-panel").style.display = "block";
+}
+</script>
+<div style="margin-top:20px;padding:14px;background:#2A1F10;border:1px solid #FFB74D;border-radius:10px;font-size:13px;color:#FFB74D;line-height:1.7;">⚠️ 注意：<br>HTTP / HTTPS 直接浏览器打开就能用<br>TCP / SSH / RDP 需要用户在手机或电脑上装 <b>cloudflared</b> 客户端才能连<br><a href="https://github.com/cloudflare/cloudflared/releases" style="color:#00E5FF;">下载地址：github.com/cloudflare/cloudflared/releases</a></div></body>
+</html>
